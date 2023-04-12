@@ -67,6 +67,23 @@ def CO_density(temperature):
     rho = Pr/(R_spec*T)
     return rho
 
+label_size = 20
+tick_size = 18
+line_width = 2
+legend_font = 10
+fig_width = 10
+fig_height = 6
+
+def create_1plot_fig():
+    # Define figure for the plot
+    fig, ax1 = plt.subplots(figsize=(fig_width, fig_height))
+    #plt.subplots_adjust(left=0.08, bottom=0.3, right=0.92, top=0.95)
+
+    # Reset values for x & y limits
+    x_min, x_max, y_min, y_max = 0, 0, 0, 0
+
+    return(fig, ax1)
+
 def format_and_save_plot(quantity, file_loc,m):
 
     label_dict = {'HRRPUA': 'HRRPUA (kW/m<sup>2</sup>)', 'MLR': 'Mass Loss Rate (g/s)', 'EHC':'Effective Heat of Combustion (MJ/kg)' , 'SPR': 'Smoke Production Rate (1/s)', 'SEA': 'Specific Extinction Area', 'Extinction Coefficient': 'Extinction Coefficient (1/m)', 'CO': 'CO Yield (g/g)', 'Soot': 'Soot Yield (g/g)'}
@@ -109,6 +126,7 @@ y_inc_dict = {'HRRPUA':100, 'MLR':0.2, 'SPR':1, 'Extinction Coefficient':0.5} #'
 for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=str.lower):
     df_dict = {}
     material = d
+    summary_df = pd.DataFrame()
     output_df = pd.DataFrame()
     co_df = pd.DataFrame()
     soot_df = pd.DataFrame()
@@ -134,21 +152,30 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
                     pretest_notes = scalar_data_series.at['PRE TEST CMT']
                 except:
                     pretest_notes = ' '
-                surf_area_mm2 = 10000
-                dims = 'not specified'
-                frame = False
-                for notes in pretest_notes.split(';'):
-                    if 'Dimensions' in notes:
-                        dims = []
-                        for i in notes.split(' '):
-                            try:
-                                dims.append(float(i))
-                            except: continue
-                        surf_area_mm2 = dims[0] * dims[1]
-                    elif 'frame' in notes:
-                        frame = True
-                if frame or '-Frame' in f:
-                        surf_area_mm2 = 8836
+                
+                # import notes to get sample surface area
+                try:
+                    notes_df = pd.read_csv(f'{data_dir}{d}/Cone/{material}_Cone_Notes.csv', index_col = 0)
+                    rep = f.split('_')[-1].replace('.csv','')
+                    HF = f.split('_')[-3].replace('Scan', '')
+                    notes_ind = f'{HF}_{rep}'
+                    surf_area_mm2 = notes_df.loc[notes_ind, 'Surface Area (mm^2)']
+                except:
+                    surf_area_mm2 = 10000
+                    dims = 'not specified'
+                    frame = False
+                    for notes in pretest_notes.split(';'):
+                        if 'Dimensions' in notes:
+                            dims = []
+                            for i in notes.split(' '):
+                                try:
+                                    dims.append(float(i))
+                                except: continue
+                            surf_area_mm2 = dims[0] * dims[1]
+                        elif 'frame' in notes:
+                            frame = True
+                    if frame or '-Frame' in f:
+                            surf_area_mm2 = 8836
 
                 surf_area_m2 = surf_area_mm2 / 1000000.0
 
@@ -215,10 +242,25 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
                 ign_ind = str(int(4 * ign_time + 1))
                 end_ind = str(int(4 * end_time + 1))
                 ign_mass = float(data_temp_df.loc[ign_ind,'Sample Mass'])
-                end_mass = float(data_temp_df.loc[end_ind,'Sample Mass'])
-                holder_mass = data_temp_df.at['1','Sample Mass'] - float(scalar_data_series.at['SPECIMEN MASS'])
-                # if float("{:.2f}".format(data_temp_df.at[scalar_data_series.at['END OF TEST SCAN'],'Sample Mass'] - holder_mass)) < 0:
-                #     print('negative mass')
+                end_mass = float(data_temp_df.loc[str(end_ind),'Sample Mass'])
+
+                if float(data_temp_df.loc[str(1),'Sample Mass']) - float(data_temp_df.loc[end_ind,'Sample Mass']) > float(scalar_data_series['SPECIMEN MASS']):
+                    try:
+                        sample_mass_inc = data_temp_df.loc[str(2):end_ind,'Sample Mass'].diff().abs() > 1
+                        mass_discont_list = sample_mass_inc.index[sample_mass_inc == True].tolist()
+                        mass_discont_list_test = [abs(int(end_ind) - int(i)) for i in mass_discont_list]
+                        if mass_discont_list_test:
+                            if int(min(mass_discont_list_test)) < 150: # this is an arbitrary threshold that appears to work well - filters out dicontinuities early in tests
+                                end_ind = int(min(mass_discont_list))-4 # -4 is an arbitrary number that works well - this ensure that if the holder was removed, we go back 1 second for the final mass 
+                                if end_ind < 0:
+                                    end_ind = int(min(mass_discont_list))
+                        end_mass = float(data_temp_df.loc[str(end_ind),'Sample Mass'])
+                        if float(data_temp_df.loc[str(1),'Sample Mass']) - end_mass < 0:
+                            end_mass = float(data_temp_df.loc[str(1),'Sample Mass']) - float(scalar_data_series['SPECIMEN MASS'])
+
+                    except:
+                        end_mass = float(data_temp_df.loc[str(1),'Sample Mass']) - float(scalar_data_series['SPECIMEN MASS'])
+
                 mass_lost = ign_mass-end_mass
                 ml_10 = ign_mass - 0.1*mass_lost
                 ml_90 = ign_mass - 0.9*mass_lost
@@ -236,9 +278,36 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
                 co_prod = (trapezoid(data_temp_df.loc[ml_10_ind:ml_90_ind,'CO Mass Flow'], x = x))*1000 # g
                 co_df.at['CO Yield (g/g)', label] = co_prod/(0.8*mass_lost)
 
-                output_df.at['Time to Sustained Ignition (s)', label] = ign_time
-                output_df.at['Time to Peak HRRPUA (s)', label] = data_temp_df.loc[data_temp_df['HRRPUA'].idxmax(), 'Time'] - float(scalar_data_series.at['TIME TO IGN'])
-                output_df.at['Peak HRRPUA (kW/m\u00b2)', label] = float("{:.2f}".format(max(data_temp_df['HRRPUA'])))
+                summary_df.at['Time to Sustained Ignition (s)', label] = scalar_data_series.at['TIME TO IGN']
+                summary_df.at['Peak HRRPUA (kW/m2)', label] = float("{:.2f}".format(max(data_temp_df['HRRPUA'])))
+                summary_df.at['Time to Peak HRRPUA (s)', label] = data_temp_df.loc[data_temp_df['HRRPUA'].idxmax(), 'Time'] - float(scalar_data_series.at['TIME TO IGN'])
+
+                ign_index = data_temp_df.index[data_temp_df['Time'] == float(scalar_data_series.at['TIME TO IGN'])][0]
+                t60 = str(int(ign_index) + 240)
+                t180 = str(int(ign_index) + 720)
+                t300 = str(int(ign_index) + 1200)
+
+                try: summary_df.at['Average HRRPUA over 60 seconds (kW/m2)', label] = float("{:.2f}".format(np.mean(data_temp_df.loc[ign_index:t60,'HRRPUA'])))
+                except: summary_df.at['Average HRRPUA over 60 seconds (kW/m2)', label] = math.nan
+
+                try: summary_df.at['Average HRRPUA over 180 seconds (kW/m2)', label] = float("{:.2f}".format(np.mean(data_temp_df.loc[ign_index:t180,'HRRPUA'])))
+                except: summary_df.at['Average HRRPUA over 180 seconds (kW/m2)', label] = math.nan
+
+                try: summary_df.at['Average HRRPUA over 300 seconds (kW/m2)', label] = float("{:.2f}".format(np.mean(data_temp_df.loc[ign_index:t300,'HRRPUA'])))
+                except: summary_df.at['Average HRRPUA over 300 seconds (kW/m2)', label] = math.nan
+
+                summary_df.at['Total Heat Released (MJ/m2)', label] = float("{:.2f}".format(data_temp_df.at[scalar_data_series.at['END OF TEST SCAN'],'THR']))
+                total_mass_lost = data_temp_df.at['1','Sample Mass'] - data_temp_df.at[scalar_data_series.at['END OF TEST SCAN'],'Sample Mass']
+                holder_mass = data_temp_df.at['1','Sample Mass'] - float(scalar_data_series.at['SPECIMEN MASS'])
+                summary_df.at['Avg. Effective Heat of Combustion (MJ/kg)', label] = float("{:.2f}".format(((data_temp_df.at[scalar_data_series.at['END OF TEST SCAN'],'THR'])*surf_area_m2)/(total_mass_lost/1000)))
+                summary_df.at['Initial Mass (g)', label] = scalar_data_series.at['SPECIMEN MASS']
+                summary_df.at['Final Mass (g)', label] = float("{:.2f}".format(data_temp_df.at[scalar_data_series.at['END OF TEST SCAN'],'Sample Mass'] - holder_mass))
+                summary_df.at['Mass at Ignition (g)', label] = float("{:.2f}".format(data_temp_df.at[ign_index,'Sample Mass'] - holder_mass))
+
+                t10 = data_temp_df['Sample Mass'].sub(data_temp_df.at['1','Sample Mass'] - 0.1*total_mass_lost).abs().idxmin()
+                t90 = data_temp_df['Sample Mass'].sub(data_temp_df.at['1','Sample Mass'] - 0.9*total_mass_lost).abs().idxmin()
+
+                summary_df.at['Avg. Mass Loss Rate [10% to 90%] (g/m2s)', label] = float("{:.2f}".format(np.mean(data_temp_df.loc[t10:t90,'MLR']/surf_area_m2)))
 
         for n in quant_list:
             for m in hf_list:
@@ -261,8 +330,13 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
     else:
         continue
 
+    summary_df = summary_df.round(1)
+    summary_df.sort_index(axis=1, inplace=True)
+    summary_df.to_csv(f'{data_dir}{material}/Cone/{material}_Cone_Analysis_Data.csv', float_format='%.1f')
+
     co_html_df = pd.DataFrame(index = hf_list, columns = ['Mean CO Yield [g/g]', 'CO Yield Std. Dev. [g/g]'])
     soot_html_df = pd.DataFrame(index = hf_list, columns = ['Mean Soot Yield [g/g]', 'Soot Yield Std. Dev. [g/g]'])
+    hoc_html_df = pd.DataFrame(index = hf_list, columns = ['Mean Effective Heat of Combustion [MJ/kg]', 'Effective Heat of Combustion Std. Dev. [MJ/kg]'])
 
     for hf in hf_list:
         html_df = output_df.filter(like=hf)
@@ -280,6 +354,12 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
         soot_html_df.loc[hf, 'Soot Yield Std. Dev. [g/g]'] = np.around(soot_hf_df.std(axis=1).to_numpy()[0], decimals=3)
         soot_html_df.index.names = ['Incident Heat Flux [kW/m\u00b2]']
 
+        hoc_df = summary_df.filter(like=hf)
+        hoc_df = hoc_df.filter(regex = 'Heat of Combustion', axis = 'index')
+        hoc_html_df.loc[hf, 'Mean Effective Heat of Combustion [MJ/kg]'] = np.around(hoc_df.mean(axis=1).to_numpy()[0], decimals=1)
+        hoc_html_df.loc[hf, 'Effective Heat of Combustion Std. Dev. [MJ/kg]'] = np.around(hoc_df.std(axis=1).to_numpy()[0], decimals=1)
+        hoc_html_df.index.names = ['Incident Heat Flux [kW/m\u00b2]']
+
     co_html_df = co_html_df.reset_index()
     co_html_df.to_html(f'{data_dir}{material}/Cone/{material}_Cone_Analysis_CO_Table.html',index=False, encoding='UTF-8', border=0)
 
@@ -288,3 +368,6 @@ for d in sorted((f for f in os.listdir(data_dir) if not f.startswith(".")), key=
     else:
         soot_html_df = soot_html_df.reset_index()
         soot_html_df.to_html(f'{data_dir}{material}/Cone/{material}_Cone_Analysis_Soot_Table.html',index=False, encoding='UTF-8', border=0)
+
+    hoc_html_df = hoc_html_df.reset_index()
+    hoc_html_df.to_html(f'{data_dir}{material}/Cone/{material}_Cone_Analysis_EHC_Table.html',index=False, encoding='UTF-8', border=0)
